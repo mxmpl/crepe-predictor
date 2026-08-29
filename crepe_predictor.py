@@ -1,3 +1,4 @@
+import hashlib
 import os
 import tempfile
 import urllib.request
@@ -17,12 +18,20 @@ Capacity = Literal["tiny", "small", "medium", "large", "full"]
 # bin-number-to-cents mapping used by the CREPE classifier (360 pitch bins)
 _CENTS_MAPPING = np.linspace(0, 7180, 360) + 1997.3794084376191
 _SAMPLE_RATE = 16000
+_TIMEOUT = 30
 _REMOTE_URLS = {
     "tiny": "https://media.githubusercontent.com/media/mxmpl/crepe-predictor/main/checkpoints/tiny.onnx",
     "small": "https://media.githubusercontent.com/media/mxmpl/crepe-predictor/main/checkpoints/small.onnx",
     "medium": "https://media.githubusercontent.com/media/mxmpl/crepe-predictor/main/checkpoints/medium.onnx",
     "large": "https://media.githubusercontent.com/media/mxmpl/crepe-predictor/main/checkpoints/large.onnx",
     "full": "https://media.githubusercontent.com/media/mxmpl/crepe-predictor/main/checkpoints/full.onnx",
+}
+_CHECKSUMS = {
+    "tiny": "345b8ed787dc94236f237f234c6fb3f3f389291315b44909643c011b7a16f8c7",
+    "small": "762e975d7717d5c47265344d3588dfac5bdee7e9a66d666a40f888a20eddbfa8",
+    "medium": "00e25a2fbf0b141a2c739609fd1587cb8923daf78162d7dd3404413cc7fbf985",
+    "large": "bff31dfecdaca02141cf3c1c3bc984e2ea2bef7de98d9cd6a36bbbe851fb12c4",
+    "full": "9046c78f1cf40ebdbad1a2b3d9dc154dab36ef51ab55c6cd4d43776b9f5948ce",
 }
 
 
@@ -32,6 +41,8 @@ def _frame(audio: np.ndarray, hop_length: int, center: bool) -> np.ndarray:
     if center:
         # pad so frames are centered on their timestamps (first frame is zero-centered)
         audio = np.pad(audio, 512)
+    if len(audio) < 1024:
+        raise ValueError(f"audio is too short to form a single 1024-sample frame: got {len(audio)} samples")
     frames = np.lib.stride_tricks.sliding_window_view(audio, 1024)[::hop_length].copy()
     frames -= frames.mean(axis=1, keepdims=True)
     frames /= np.clip(frames.std(axis=1, keepdims=True), 1e-8, None)  # avoid /0 on constant (silent) frames
@@ -98,6 +109,12 @@ def _predict(
 
     # resample (POV, pitch) to the frame count implied by frame_shift/frame_length
     nsamples = 1 + int((len(audio) - frame_length * _SAMPLE_RATE) / hop_length)
+    if nsamples < 1:
+        min_samples = int(frame_length * _SAMPLE_RATE)
+        raise ValueError(
+            f"audio is too short to produce any output frames: got {len(audio)} samples, but "
+            f"frame_length={frame_length}s needs at least {min_samples} samples at {_SAMPLE_RATE} Hz"
+        )
     data = scipy.signal.resample(np.stack([confidence, frequency], axis=1), nsamples)
     data[data[:, 0] < 1e-2, 0] = 0
     data[data[:, 0] > 1, 0] = 1
@@ -162,7 +179,16 @@ def _download(capacity: Capacity, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=destination.parent) as tmp_dir:
         tmp = Path(tmp_dir) / destination.name
-        urllib.request.urlretrieve(_REMOTE_URLS[capacity], tmp)
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(_REMOTE_URLS[capacity], timeout=_TIMEOUT) as response, tmp.open("wb") as f:
+            for chunk in iter(lambda: response.read(1 << 20), b""):
+                f.write(chunk)
+                digest.update(chunk)
+        if digest.hexdigest() != _CHECKSUMS[capacity]:
+            raise ValueError(
+                f"checksum mismatch for the {capacity!r} checkpoint: "
+                f"expected {_CHECKSUMS[capacity]}, got {digest.hexdigest()}"
+            )
         tmp.replace(destination)
 
 

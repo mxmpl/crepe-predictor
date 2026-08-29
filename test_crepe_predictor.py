@@ -1,5 +1,7 @@
+import hashlib
 import os
 from pathlib import Path
+from typing import Self
 
 import numpy as np
 import onnxruntime as ort
@@ -108,11 +110,24 @@ def test_postprocess_raises_when_pitch_not_positive_after_interpolation():
         _postprocess(np.stack([pov, pitch], axis=1))
 
 
+def test_predict_raises_on_audio_shorter_than_frame_length(tiny_checkpoint):
+    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
+    audio = np.zeros(100, dtype=np.float32)
+    with pytest.raises(ValueError, match="audio is too short"):
+        predictor.predict(audio, frame_length=0.025)
+
+
 def test_frame_without_centering():
     audio = np.zeros(2048, dtype=np.float32)
     frames = _frame(audio, 160, center=False)
     assert frames.shape[1] == 1024
     assert len(frames) == (len(audio) - 1024) // 160 + 1
+
+
+def test_frame_raises_on_audio_shorter_than_one_frame():
+    audio = np.zeros(100, dtype=np.float32)
+    with pytest.raises(ValueError, match="audio is too short"):
+        _frame(audio, 160, center=False)
 
 
 def test_crepe_predictor_predict_kaldi(tiny_checkpoint, monkeypatch):
@@ -135,18 +150,49 @@ def test_cache_dir_falls_back_to_home(monkeypatch):
     assert crepe_predictor._cache_dir() == Path.home() / ".cache" / "crepe_predictor" / "checkpoints"
 
 
+class _FakeResponse:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self._pos = 0
+
+    def read(self, size: int) -> bytes:
+        chunk = self._data[self._pos : self._pos + size]
+        self._pos += len(chunk)
+        return chunk
+
+    def __enter__(self) -> "Self":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        pass
+
+
 def test_download_moves_temp_file_to_destination(tmp_path, monkeypatch):
     destination = tmp_path / "sub" / "tiny.onnx"
+    data = b"data"
+    monkeypatch.setitem(crepe_predictor._CHECKSUMS, "tiny", hashlib.sha256(data).hexdigest())
     captured = {}
 
-    def fake_urlretrieve(url, filename):
+    def fake_urlopen(url, timeout=None):
         captured["url"] = url
-        Path(filename).write_bytes(b"data")
+        captured["timeout"] = timeout
+        return _FakeResponse(data)
 
-    monkeypatch.setattr(crepe_predictor.urllib.request, "urlretrieve", fake_urlretrieve)
+    monkeypatch.setattr(crepe_predictor.urllib.request, "urlopen", fake_urlopen)
     crepe_predictor._download("tiny", destination)
-    assert destination.read_bytes() == b"data"
+    assert destination.read_bytes() == data
     assert captured["url"] == crepe_predictor._REMOTE_URLS["tiny"]
+    assert captured["timeout"] == crepe_predictor._TIMEOUT
+
+
+def test_download_raises_and_leaves_no_file_on_checksum_mismatch(tmp_path, monkeypatch):
+    destination = tmp_path / "tiny.onnx"
+    monkeypatch.setattr(
+        crepe_predictor.urllib.request, "urlopen", lambda url, timeout=None: _FakeResponse(b"corrupted")
+    )
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        crepe_predictor._download("tiny", destination)
+    assert not destination.exists()
 
 
 def test_resolve_checkpoint_downloads_when_missing_from_cache(tmp_path, monkeypatch):
