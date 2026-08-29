@@ -1,0 +1,56 @@
+[project]
+name = "crepe-predictor"
+version = "0.1.0"
+description = "A dependency-light reimplementation of CREPE inference with ONNX"
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "Maxime Poli" }]
+keywords = ["machine learning", "speech"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "numpy>=2.4.6",
+  "onnx>=1.22.0",
+  "onnxruntime>=1.27.0",
+  "scipy>=1.18.0",
+]
+
+[project.urls]
+repository = "https://github.com/mxmpl/crepe-predictor"
+
+[dependency-groups]
+test = [
+  "hypothesis>=6.156.4",
+  "pytest>=9.1.1",
+  "pytest-cov>=7.1.0",
+  "torchcrepe>=0.0.24",
+]
+
+[build-system]
+requires = ["flit_core>=4.0.2"]
+build-backend = "flit_core.buildapi"
+
+[tool.coverage.run]
+branch = true
+source = ["crepe_predictor.py"]
+
+[tool.coverage.report]
+fail_under = 99
+
+[tool.pytest]
+addopts = ["--cov=crepe_predictor"]
+filterwarnings = ["ignore:.*LeafSpec.*:FutureWarning"]
+
+[tool.ruff]
+line-length = 119
+
+[tool.typos.default.extend-words]
+arange = "arange"
