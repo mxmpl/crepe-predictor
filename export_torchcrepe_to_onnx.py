@@ -1,6 +1,7 @@
 # /// script
 # requires-python = ">=3.14"
 # dependencies = [
+#     "onnx>=1.22.0",
 #     "onnxscript>=0.7.1",
 #     "torch>=2.13.0",
 # ]
@@ -131,5 +132,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     model = CREPE(args.capacity)
-    model.load_state_dict(convert_from_torchcrepe(torch.load(args.checkpoint)))
+    model.load_state_dict(convert_from_torchcrepe(torch.load(args.checkpoint, map_location="cpu", weigts_only=True)))
     export_crepe_to_onnx(model, args.output)

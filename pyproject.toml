@@ -18,7 +18,6 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=2.4.6",
-  "onnx>=1.22.0",
   "onnxruntime>=1.27.0",
   "scipy>=1.18.0",
 ]
@@ -29,6 +28,8 @@ repository = "https://github.com/mxmpl/crepe-predictor"
 [dependency-groups]
 test = [
   "hypothesis>=6.156.4",
+  "onnx>=1.22.0",
+  "onnxscript>=0.7.1",
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
   "torchcrepe>=0.0.24",
