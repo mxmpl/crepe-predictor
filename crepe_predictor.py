@@ -8,7 +8,6 @@ from typing import Literal
 import numpy as np
 import onnxruntime as ort
 import scipy.interpolate
-import scipy.optimize
 import scipy.signal
 
 __all__ = ["Capacity", "CrepePredictor", "postprocess_pitch"]
@@ -99,6 +98,13 @@ def _predict(
     output column is the probability of voicing, the second the estimated pitch in Hz.
     """
     hop_length = round(_SAMPLE_RATE * frame_shift)
+    nsamples = 1 + int((len(audio) - frame_length * _SAMPLE_RATE) / hop_length)
+    if nsamples < 1:
+        min_samples = int(frame_length * _SAMPLE_RATE)
+        raise ValueError(
+            f"audio is too short to produce any output frames: got {len(audio)} samples, but "
+            f"frame_length={frame_length}s needs at least {min_samples} samples at {_SAMPLE_RATE} Hz"
+        )
     frames = _frame(audio, hop_length, center)
     salience = np.asarray(session.run(None, {session.get_inputs()[0].name: frames})[0])  # activation matrix, (T, 360)
     confidence = salience.max(axis=1)  # heuristic voicing probability
@@ -107,17 +113,10 @@ def _predict(
     frequency = 10 * 2 ** (cents / 1200)
     frequency[np.isnan(frequency)] = 0
 
-    # resample (POV, pitch) to the frame count implied by frame_shift/frame_length
-    nsamples = 1 + int((len(audio) - frame_length * _SAMPLE_RATE) / hop_length)
-    if nsamples < 1:
-        min_samples = int(frame_length * _SAMPLE_RATE)
-        raise ValueError(
-            f"audio is too short to produce any output frames: got {len(audio)} samples, but "
-            f"frame_length={frame_length}s needs at least {min_samples} samples at {_SAMPLE_RATE} Hz"
-        )
     data = scipy.signal.resample(np.stack([confidence, frequency], axis=1), nsamples)
     data[data[:, 0] < 1e-2, 0] = 0
     data[data[:, 0] > 1, 0] = 1
+    data[data[:, 1] < 0, 1] = 0
     return data
 
 
@@ -130,7 +129,7 @@ def _predict_voicing(confidence: np.ndarray) -> np.ndarray:
     return _viterbi(log_start, log_trans, log_emit)
 
 
-def _nccf_to_pov(nccf: float) -> float:
+def _nccf_to_pov(nccf: np.ndarray) -> np.ndarray:
     """Normalized cross-correlation to probability of voicing (Povey, ICASSP 2014)."""
     y = -5.2 + 5.4 * np.exp(7.5 * (nccf - 1)) + 4.8 * nccf - 2 * np.exp(-10 * nccf) + 4.2 * np.exp(20 * (nccf - 1))
     return 1 / (1 + np.exp(-y))
@@ -154,19 +153,8 @@ def postprocess_pitch(pitch: np.ndarray) -> np.ndarray:
     data[last:] = data[last]
     if not np.all(data > 0):
         raise ValueError("Not all pitch values are positive after interpolation")
-
-    # invert the POV -> NCCF mapping (saturates to 0/1 outside the range spanned by nccf in [0, 1])
-    lo, hi = _nccf_to_pov(0.0), _nccf_to_pov(1.0)
-    nccf = np.array(
-        [
-            0.0
-            if pov <= lo
-            else 1.0
-            if pov >= hi
-            else scipy.optimize.bisect(lambda x, pov=pov: _nccf_to_pov(x) - pov, 0, 1)
-            for pov in pitch[:, 0]
-        ]
-    )
+    grid = np.linspace(0, 1, 4096)
+    nccf = np.interp(pitch[:, 0], _nccf_to_pov(grid), grid, left=0.0, right=1.0)
     return np.stack([nccf, data], axis=1)
 
 

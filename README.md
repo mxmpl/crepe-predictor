@@ -16,7 +16,7 @@ Exporting checkpoints additionally requires `torch` and `onnxscript`, listed as 
 
 ## API
 
-Everything is exposed through `crepe_predictor.CrepePredictor`.
+Inference goes through `crepe_predictor.CrepePredictor`; `crepe_predictor.postprocess_pitch` is exposed separately for pitch that was produced elsewhere.
 
 ### `CrepePredictor(capacity="full", *, checkpoint=None, onnx_providers=None)`
 
@@ -37,6 +37,10 @@ Estimates pitch from 16 kHz mono `audio`, returning an `(n_frames, 2)` array of 
 ### `predict_kaldi(audio, *, viterbi=True, center=True, frame_shift=0.01, frame_length=0.025) -> np.ndarray`
 
 Same arguments as `predict`, but returns `(n_frames, 2)` of `(NCCF, pitch)`, compatible with Kaldi's `process-pitch`: unvoiced frames are detected with a voicing HMM, pitch is interpolated over them, and POV is converted to an NCCF value. Raises `ValueError` if no frame is voiced.
+
+### `postprocess_pitch(pitch) -> np.ndarray`
+
+The `(POV, pitch)` → `(NCCF, pitch)` conversion `predict_kaldi` applies, exposed on its own so it can be run over an `(n_frames, 2)` array obtained from `predict` earlier or from another pitch extractor.
 
 ## Usage
 

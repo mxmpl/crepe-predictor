@@ -1,19 +1,20 @@
 import hashlib
 import os
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import onnxruntime as ort
 import pytest
 import torch
 import torchcrepe
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import array_shapes, arrays
 from typing_extensions import Self
 
 import crepe_predictor
-from crepe_predictor import CrepePredictor, _frame, _resolve_checkpoint, postprocess_pitch
+from crepe_predictor import CrepePredictor, _frame, _predict, _resolve_checkpoint, postprocess_pitch
 from export_torchcrepe_to_onnx import CREPE, convert_from_torchcrepe, export_crepe_to_onnx
 
 
@@ -56,8 +57,6 @@ def test_crepe_matches_torchcrepe(models, audio):
     """Our torch and ONNX CREPE produce the same activation matrix as torchcrepe."""
     reference, crepe, session = models
     frames = _frame(audio, 160, center=True)
-    assume(np.all(np.isfinite(frames)))  # skip degenerate (constant) frames
-
     with torch.no_grad():
         expected = reference(torch.from_numpy(frames)).numpy()
         torch_out = crepe(torch.from_numpy(frames)).numpy()
@@ -115,6 +114,32 @@ def test_predict_raises_on_audio_shorter_than_frame_length(tiny_checkpoint):
     audio = np.zeros(100, dtype=np.float32)
     with pytest.raises(ValueError, match="audio is too short"):
         predictor.predict(audio, frame_length=0.025)
+
+
+class _FakeSession:
+    """Minimal stand-in for an ONNX session returning a fixed activation matrix."""
+
+    def __init__(self, salience: np.ndarray) -> None:
+        self.salience = salience
+
+    def get_inputs(self) -> list[object]:
+        return [type("_Input", (), {"name": "frames"})]
+
+    def run(self, output_names: object, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
+        return [self.salience]
+
+
+def test_predict_clips_pitch_ringing_from_the_resample():
+    """A step-shaped pitch contour makes the FFT resample ring; pitch must not go below 0 Hz."""
+    n_frames = 1000
+    salience = np.full((n_frames, 360), 1e-6, dtype=np.float32)
+    # alternate between a low and a high pitch bin, so the contour has sharp steps
+    salience[np.arange(n_frames), np.where((np.arange(n_frames) // 100) % 2 == 0, 20, 340)] = 1.0
+
+    audio = np.zeros(160 * n_frames, dtype=np.float32)
+    pitch = _predict(cast(ort.InferenceSession, _FakeSession(salience)), audio, viterbi=False)
+    assert np.all(pitch[:, 1] >= 0)
+    assert np.any(pitch[:, 1] == 0)  # the clip actually fires here
 
 
 def test_frame_without_centering():

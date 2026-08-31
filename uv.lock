@@ -448,6 +448,7 @@ test = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "torchcrepe" },
+    { name = "typing-extensions" },
 ]
 
 [package.metadata]
@@ -465,6 +466,7 @@ test = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "torchcrepe", specifier = ">=0.0.24" },
+    { name = "typing-extensions", specifier = ">=4.15.0" },
 ]
 
 [[package]]

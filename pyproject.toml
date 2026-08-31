@@ -11,10 +11,14 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Typing :: Typed",
 ]
 dependencies = [
   "numpy>=2.2.6",
@@ -33,6 +37,7 @@ test = [
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
   "torchcrepe>=0.0.24",
+  "typing-extensions>=4.15.0",
 ]
 
 [build-system]

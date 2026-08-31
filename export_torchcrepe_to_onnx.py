@@ -126,11 +126,11 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Convert a torchcrepe checkpoint to ONNX.")
-    parser.add_argument("checkpoint", help="path to the torchcrepe .pt checkpoint")
+    parser.add_argument("checkpoint", help="path to the torchcrepe .pth checkpoint")
     parser.add_argument("output", help="path to the output .onnx file")
     parser.add_argument("capacity", choices=["tiny", "small", "medium", "large", "full"], help="the model size")
     args = parser.parse_args()
 
     model = CREPE(args.capacity)
-    model.load_state_dict(convert_from_torchcrepe(torch.load(args.checkpoint, map_location="cpu", weigts_only=True)))
+    model.load_state_dict(convert_from_torchcrepe(torch.load(args.checkpoint, map_location="cpu", weights_only=True)))
     export_crepe_to_onnx(model, args.output)
