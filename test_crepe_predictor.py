@@ -1,7 +1,6 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import Self
 
 import numpy as np
 import onnxruntime as ort
@@ -11,9 +10,10 @@ import torchcrepe
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import array_shapes, arrays
+from typing_extensions import Self
 
 import crepe_predictor
-from crepe_predictor import CrepePredictor, _frame, _postprocess, _resolve_checkpoint
+from crepe_predictor import CrepePredictor, _frame, _resolve_checkpoint, postprocess_pitch
 from export_torchcrepe_to_onnx import CREPE, convert_from_torchcrepe, export_crepe_to_onnx
 
 
@@ -90,7 +90,7 @@ def test_postprocess_interpolates_unvoiced_and_converts_pov_to_nccf():
     # runs must be long enough to overcome the voicing HMM's continuity prior (see _predict_voicing)
     pov = np.concatenate([np.zeros(15), np.full(15, 0.95), np.zeros(15)])
     pitch = np.concatenate([np.full(15, 100.0), np.full(15, 150.0), np.full(15, 100.0)])
-    nccf_pitch = _postprocess(np.stack([pov, pitch], axis=1))
+    nccf_pitch = postprocess_pitch(np.stack([pov, pitch], axis=1))
     assert nccf_pitch.shape == (45, 2)
     assert np.all(nccf_pitch[:, 1] > 0)
     assert np.all((nccf_pitch[:, 0] >= 0) & (nccf_pitch[:, 0] <= 1))
@@ -99,7 +99,7 @@ def test_postprocess_interpolates_unvoiced_and_converts_pov_to_nccf():
 def test_postprocess_raises_when_no_frame_is_voiced():
     pitch = np.zeros((10, 2))
     with pytest.raises(ValueError, match="No voiced frames"):
-        _postprocess(pitch)
+        postprocess_pitch(pitch)
 
 
 def test_postprocess_raises_when_pitch_not_positive_after_interpolation():
@@ -107,7 +107,7 @@ def test_postprocess_raises_when_pitch_not_positive_after_interpolation():
     pitch = np.full(20, 100.0)
     pitch[5] = -1.0  # invalid pitch value smuggled into an otherwise-voiced frame
     with pytest.raises(ValueError, match="Not all pitch values are positive"):
-        _postprocess(np.stack([pov, pitch], axis=1))
+        postprocess_pitch(np.stack([pov, pitch], axis=1))
 
 
 def test_predict_raises_on_audio_shorter_than_frame_length(tiny_checkpoint):
@@ -160,7 +160,7 @@ class _FakeResponse:
         self._pos += len(chunk)
         return chunk
 
-    def __enter__(self) -> "Self":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:

@@ -11,7 +11,7 @@ import scipy.interpolate
 import scipy.optimize
 import scipy.signal
 
-__all__ = ["Capacity", "CrepePredictor"]
+__all__ = ["Capacity", "CrepePredictor", "postprocess_pitch"]
 
 Capacity = Literal["tiny", "small", "medium", "large", "full"]
 
@@ -136,7 +136,7 @@ def _nccf_to_pov(nccf: float) -> float:
     return 1 / (1 + np.exp(-y))
 
 
-def _postprocess(pitch: np.ndarray) -> np.ndarray:
+def postprocess_pitch(pitch: np.ndarray) -> np.ndarray:
     """Turn the raw (POV, pitch) from :func:`_predict` into (NCCF, pitch) for Kaldi.
 
     Unvoiced frames are detected with a voicing HMM and their pitch interpolated, then
@@ -241,7 +241,7 @@ class CrepePredictor:
         frame_length: float = 0.025,
     ) -> np.ndarray:
         """Like :meth:`predict`, but returns (NCCF, pitch) per frame for use with Kaldi's ``process-pitch``."""
-        return _postprocess(
+        return postprocess_pitch(
             self.predict(
                 audio,
                 viterbi=viterbi,

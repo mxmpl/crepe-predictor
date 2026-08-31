@@ -3,7 +3,7 @@ name = "crepe-predictor"
 version = "0.1.0"
 description = "A dependency-light reimplementation of CREPE inference with ONNX"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 authors = [{ name = "Maxime Poli" }]
 keywords = ["machine learning", "speech"]
 classifiers = [
@@ -17,9 +17,9 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-  "numpy>=2.4.6",
-  "onnxruntime>=1.27.0",
-  "scipy>=1.18.0",
+  "numpy>=2.2.6",
+  "onnxruntime>=1.24.3",
+  "scipy>=1.15.3",
 ]
 
 [project.urls]
