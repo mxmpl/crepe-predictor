@@ -109,11 +109,11 @@ def test_postprocess_raises_when_pitch_not_positive_after_interpolation():
         postprocess_pitch(np.stack([pov, pitch], axis=1))
 
 
-def test_predict_raises_on_audio_shorter_than_frame_length(tiny_checkpoint):
+def test_predict_raises_on_audio_shorter_than_one_frame(tiny_checkpoint):
     predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
     audio = np.zeros(100, dtype=np.float32)
     with pytest.raises(ValueError, match="audio is too short"):
-        predictor.predict(audio, frame_length=0.025)
+        predictor.predict(audio, center=False)
 
 
 class _FakeSession:
@@ -129,24 +129,40 @@ class _FakeSession:
         return [self.salience]
 
 
-def test_predict_clips_pitch_ringing_from_the_resample():
-    """A step-shaped pitch contour makes the FFT resample ring; pitch must not go below 0 Hz."""
+def test_predict_frame_count_matches_the_original_crepe():
+    """One estimate per hop over the whole signal, as marl/crepe and torchcrepe do."""
+    n_frames, hop = 1000, 160
+    salience = np.full((n_frames + 1, 360), 1e-6, dtype=np.float32)
+    salience[:, 180] = 1.0
+    audio = np.zeros(hop * n_frames, dtype=np.float32)
+
+    session = cast(ort.InferenceSession, _FakeSession(salience))
+    centered = _predict(session, audio, viterbi=False, center=True)
+    assert len(centered) == 1 + len(audio) // hop
+
+    salience = salience[: 1 + (len(audio) - crepe_predictor.WINDOW_SIZE) // hop]
+    session = cast(ort.InferenceSession, _FakeSession(salience))
+    uncentered = _predict(session, audio, viterbi=False, center=False)
+    assert len(uncentered) == 1 + (len(audio) - crepe_predictor.WINDOW_SIZE) // hop
+
+
+def test_predict_never_returns_a_negative_pitch():
+    """A step-shaped contour used to ring through an FFT resample of the output."""
     n_frames = 1000
     salience = np.full((n_frames, 360), 1e-6, dtype=np.float32)
     # alternate between a low and a high pitch bin, so the contour has sharp steps
     salience[np.arange(n_frames), np.where((np.arange(n_frames) // 100) % 2 == 0, 20, 340)] = 1.0
 
-    audio = np.zeros(160 * n_frames, dtype=np.float32)
+    audio = np.zeros(160 * (n_frames - 1), dtype=np.float32)
     pitch = _predict(cast(ort.InferenceSession, _FakeSession(salience)), audio, viterbi=False)
-    assert np.all(pitch[:, 1] >= 0)
-    assert np.any(pitch[:, 1] == 0)  # the clip actually fires here
+    assert np.all(pitch[:, 1] > 0)
 
 
 def test_frame_without_centering():
     audio = np.zeros(2048, dtype=np.float32)
     frames = _frame(audio, 160, center=False)
     assert frames.shape[1] == 1024
-    assert len(frames) == (len(audio) - 1024) // 160 + 1
+    assert len(frames) == (len(audio) - crepe_predictor.WINDOW_SIZE) // 160 + 1
 
 
 def test_frame_raises_on_audio_shorter_than_one_frame():

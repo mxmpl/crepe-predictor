@@ -8,9 +8,8 @@ from typing import Literal
 import numpy as np
 import onnxruntime as ort
 import scipy.interpolate
-import scipy.signal
 
-__all__ = ["Capacity", "CrepePredictor", "postprocess_pitch"]
+__all__ = ["WINDOW_SIZE", "Capacity", "CrepePredictor", "postprocess_pitch"]
 
 Capacity = Literal["tiny", "small", "medium", "large", "full"]
 
@@ -33,16 +32,18 @@ _CHECKSUMS = {
     "full": "9046c78f1cf40ebdbad1a2b3d9dc154dab36ef51ab55c6cd4d43776b9f5948ce",
 }
 
+WINDOW_SIZE = 1024  # samples per analysis window, fixed by the CREPE architecture
+
 
 def _frame(audio: np.ndarray, hop_length: int, center: bool) -> np.ndarray:
     """Split ``audio`` into normalized 1024-sample frames expected by CREPE."""
     audio = np.asarray(audio, dtype=np.float32)
     if center:
         # pad so frames are centered on their timestamps (first frame is zero-centered)
-        audio = np.pad(audio, 512)
-    if len(audio) < 1024:
-        raise ValueError(f"audio is too short to form a single 1024-sample frame: got {len(audio)} samples")
-    frames = np.lib.stride_tricks.sliding_window_view(audio, 1024)[::hop_length].copy()
+        audio = np.pad(audio, WINDOW_SIZE // 2)
+    if len(audio) < WINDOW_SIZE:
+        raise ValueError(f"audio is too short to form a single {WINDOW_SIZE}-sample frame: got {len(audio)} samples")
+    frames = np.lib.stride_tricks.sliding_window_view(audio, WINDOW_SIZE)[::hop_length].copy()
     frames -= frames.mean(axis=1, keepdims=True)
     frames /= np.clip(frames.std(axis=1, keepdims=True), 1e-8, None)  # avoid /0 on constant (silent) frames
     return frames
@@ -90,21 +91,17 @@ def _predict(
     viterbi: bool = True,
     center: bool = True,
     frame_shift: float = 0.01,
-    frame_length: float = 0.025,
 ) -> np.ndarray:
     """Extract the (POV, pitch) per frame from a 16 kHz mono ``audio`` signal.
 
     ``session`` runs the CREPE model exported to ONNX (see ``model.export_onnx``). The first
     output column is the probability of voicing, the second the estimated pitch in Hz.
+
+    As in the original CREPE, one estimate is produced per ``frame_shift``: the result has
+    ``1 + len(audio) // hop_length`` rows when ``center`` is set, and
+    ``1 + (len(audio) - WINDOW_SIZE) // hop_length`` otherwise.
     """
     hop_length = round(_SAMPLE_RATE * frame_shift)
-    nsamples = 1 + int((len(audio) - frame_length * _SAMPLE_RATE) / hop_length)
-    if nsamples < 1:
-        min_samples = int(frame_length * _SAMPLE_RATE)
-        raise ValueError(
-            f"audio is too short to produce any output frames: got {len(audio)} samples, but "
-            f"frame_length={frame_length}s needs at least {min_samples} samples at {_SAMPLE_RATE} Hz"
-        )
     frames = _frame(audio, hop_length, center)
     salience = np.asarray(session.run(None, {session.get_inputs()[0].name: frames})[0])  # activation matrix, (T, 360)
     confidence = salience.max(axis=1)  # heuristic voicing probability
@@ -112,12 +109,7 @@ def _predict(
     cents = _local_average_cents(salience, centers)
     frequency = 10 * 2 ** (cents / 1200)
     frequency[np.isnan(frequency)] = 0
-
-    data = scipy.signal.resample(np.stack([confidence, frequency], axis=1), nsamples)
-    data[data[:, 0] < 1e-2, 0] = 0
-    data[data[:, 0] > 1, 0] = 1
-    data[data[:, 1] < 0, 1] = 0
-    return data
+    return np.stack([confidence, frequency], axis=1)
 
 
 def _predict_voicing(confidence: np.ndarray) -> np.ndarray:
@@ -214,10 +206,13 @@ class CrepePredictor:
         viterbi: bool = True,
         center: bool = True,
         frame_shift: float = 0.01,
-        frame_length: float = 0.025,
     ) -> np.ndarray:
-        """Estimate (POV, pitch) per frame, as an ``(n_frames, 2)`` array in Hz."""
-        return _predict(self.session, audio, viterbi, center, frame_shift, frame_length)
+        """Estimate (POV, pitch) per frame, as an ``(n_frames, 2)`` array in Hz.
+
+        One estimate per ``frame_shift``, as in the original CREPE: see :func:`_predict`
+        for the exact frame count.
+        """
+        return _predict(self.session, audio, viterbi, center, frame_shift)
 
     def predict_kaldi(
         self,
@@ -226,15 +221,6 @@ class CrepePredictor:
         viterbi: bool = True,
         center: bool = True,
         frame_shift: float = 0.01,
-        frame_length: float = 0.025,
     ) -> np.ndarray:
         """Like :meth:`predict`, but returns (NCCF, pitch) per frame for use with Kaldi's ``process-pitch``."""
-        return postprocess_pitch(
-            self.predict(
-                audio,
-                viterbi=viterbi,
-                center=center,
-                frame_shift=frame_shift,
-                frame_length=frame_length,
-            )
-        )
+        return postprocess_pitch(self.predict(audio, viterbi=viterbi, center=center, frame_shift=frame_shift))

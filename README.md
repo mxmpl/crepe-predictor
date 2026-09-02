@@ -26,15 +26,15 @@ Resolves a checkpoint and opens an ONNX Runtime session for it.
 - `checkpoint`: path to a local `.onnx` file. If omitted, the checkpoint matching `capacity` is downloaded and cached under `$CREPE_CACHE_DIR`, `$XDG_CACHE_HOME`, or `~/.cache/crepe_predictor/checkpoints`.
 - `onnx_providers`: ONNX Runtime execution providers, e.g. `["CUDAExecutionProvider", "CPUExecutionProvider"]`. Defaults to `["CPUExecutionProvider"]`.
 
-### `predict(audio, *, viterbi=True, center=True, frame_shift=0.01, frame_length=0.025) -> np.ndarray`
+### `predict(audio, *, viterbi=True, center=True, frame_shift=0.01) -> np.ndarray`
 
 Estimates pitch from 16 kHz mono `audio`, returning an `(n_frames, 2)` array of `(POV, pitch)`: probability of voicing in `[0, 1]`, and pitch in Hz.
 
 - `viterbi`: decode pitch bins along a Viterbi path enforcing pitch continuity, instead of a per-frame argmax.
 - `center`: pad `audio` so each frame is centered on its timestamp.
-- `frame_shift`, `frame_length`: frame spacing and length in seconds, used to resample the output to the frame count they imply.
+- `frame_shift`: frame spacing in seconds (the hop).
 
-### `predict_kaldi(audio, *, viterbi=True, center=True, frame_shift=0.01, frame_length=0.025) -> np.ndarray`
+### `predict_kaldi(audio, *, viterbi=True, center=True, frame_shift=0.01) -> np.ndarray`
 
 Same arguments as `predict`, but returns `(n_frames, 2)` of `(NCCF, pitch)`, compatible with Kaldi's `process-pitch`: unvoiced frames are detected with a voicing HMM, pitch is interpolated over them, and POV is converted to an NCCF value. Raises `ValueError` if no frame is voiced.
 
