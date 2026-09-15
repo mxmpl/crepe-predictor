@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "A dependency-light reimplementation of CREPE inference with ONNX"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
 authors = [{ name = "Maxime Poli" }]
 keywords = ["machine learning", "speech"]
 classifiers = [
