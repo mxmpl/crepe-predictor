@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+
 import onnxruntime as ort
 import scipy.interpolate
 

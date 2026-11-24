@@ -45,3 +45,5 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+        env:
+          ORT_DISABLE_TELEMETRY: "1"

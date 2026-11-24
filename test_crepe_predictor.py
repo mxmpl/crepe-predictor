@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import cast
 
 import numpy as np
+
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+
 import onnxruntime as ort
 import pytest
 import torch
