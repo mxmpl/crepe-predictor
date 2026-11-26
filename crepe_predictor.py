@@ -2,8 +2,9 @@ import hashlib
 import os
 import tempfile
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 
@@ -12,7 +13,7 @@ os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 import onnxruntime as ort
 import scipy.interpolate
 
-__all__ = ["WINDOW_SIZE", "Capacity", "CrepePredictor", "postprocess_pitch"]
+__all__ = ["WINDOW_SIZE", "Capacity", "CrepePredictor", "to_kaldi_pitch"]
 
 Capacity = Literal["tiny", "small", "medium", "large", "full"]
 
@@ -130,11 +131,22 @@ def _nccf_to_pov(nccf: np.ndarray) -> np.ndarray:
     return 1 / (1 + np.exp(-y))
 
 
-def postprocess_pitch(pitch: np.ndarray) -> np.ndarray:
-    """Turn the raw (POV, pitch) from :func:`_predict` into (NCCF, pitch) for Kaldi.
+def to_kaldi_pitch(pitch: np.ndarray) -> np.ndarray:
+    """Convert (POV, pitch) per frame into (NCCF, pitch) for Kaldi's ``process-pitch``.
 
-    Unvoiced frames are detected with a voicing HMM and their pitch interpolated, then
-    the POV is converted back to an NCCF usable by Kaldi's ``process-pitch``.
+    Unvoiced frames are detected with a voicing HMM and their pitch interpolated from the
+    surrounding voiced frames, then the POV is converted back to an NCCF.
+
+    Args:
+        pitch: An ``(n_frames, 2)`` array of (POV, pitch), as returned by calling a
+            :class:`CrepePredictor`: the probability of voicing in ``[0, 1]`` and the pitch in Hz.
+
+    Returns:
+        An ``(n_frames, 2)`` array of (NCCF, pitch): the NCCF in ``[0, 1]`` and the pitch in Hz,
+        interpolated over unvoiced frames so that it is positive everywhere.
+
+    Raises:
+        ValueError: If no frame is voiced, or if the interpolated pitch is not positive everywhere.
     """
     to_remove = _predict_voicing(pitch[:, 0]) == 0  # interpolate pitch values over the unvoiced frames
     if np.all(to_remove):
@@ -196,13 +208,36 @@ class CrepePredictor:
         capacity: Capacity = "full",
         *,
         checkpoint: str | Path | None = None,
-        onnx_providers: list[str] | None = None,
+        providers: Sequence[str | tuple[str, dict[str, Any]]] | None = None,
+        session_options: ort.SessionOptions | None = None,
     ) -> None:
+        """Resolve a checkpoint and open an ONNX Runtime session for it.
+
+        Args:
+            capacity: Model size, trading accuracy for speed.
+            checkpoint: Path to a local ``.onnx`` file. If omitted, the checkpoint matching
+                ``capacity`` is downloaded and cached under ``$CREPE_CACHE_DIR``,
+                ``$XDG_CACHE_HOME``, or ``~/.cache/crepe_predictor/checkpoints``.
+            providers: ONNX Runtime execution providers, in order of preference. Each is a
+                provider name, or a ``(name, options)`` tuple to configure it, e.g.
+                ``[("CUDAExecutionProvider", {"device_id": 1}), "CPUExecutionProvider"]``.
+                Defaults to ``["CPUExecutionProvider"]``.
+            session_options: ONNX Runtime session options, e.g. to set the number of threads
+                with ``intra_op_num_threads``. Defaults to ONNX Runtime's own defaults.
+
+        Raises:
+            FileNotFoundError: If ``checkpoint`` is given but does not exist.
+            ValueError: If the downloaded checkpoint does not match its expected checksum.
+        """
         self.capacity = capacity
         path = _resolve_checkpoint(capacity, checkpoint)
-        self.session = ort.InferenceSession(str(path), providers=onnx_providers or ["CPUExecutionProvider"])
+        self.session = ort.InferenceSession(
+            str(path),
+            sess_options=session_options,
+            providers=list(providers) if providers else ["CPUExecutionProvider"],
+        )
 
-    def predict(
+    def __call__(
         self,
         audio: np.ndarray,
         *,
@@ -210,20 +245,28 @@ class CrepePredictor:
         center: bool = True,
         frame_shift: float = 0.01,
     ) -> np.ndarray:
-        """Estimate (POV, pitch) per frame, as an ``(n_frames, 2)`` array in Hz.
+        """Estimate the pitch of a 16 kHz mono ``audio`` signal, frame by frame.
 
-        One estimate per ``frame_shift``, as in the original CREPE: see :func:`_predict`
-        for the exact frame count.
+        Args:
+            audio: 1-D array of audio samples at 16 kHz, typically float32 in ``[-1, 1]``.
+                Each frame is normalized independently, so the overall scale does not matter.
+            viterbi: If true, decode pitch bins along a Viterbi path that enforces pitch
+                continuity across frames. Otherwise, take the most salient bin of each frame.
+            center: If true, pad ``audio`` by half a window on both sides so that each frame
+                is centered on its timestamp, the first one at time 0.
+            frame_shift: Spacing between consecutive frames, in seconds.
+
+        Returns:
+            An ``(n_frames, 2)`` array of (POV, pitch): the probability of voicing in ``[0, 1]``
+            and the pitch in Hz. Pass it to :func:`to_kaldi_pitch` to get (NCCF, pitch) for Kaldi.
+
+            There is one row per ``frame_shift``, as in the original CREPE. With
+            ``hop_length = round(16000 * frame_shift)``, ``n_frames`` is
+            ``1 + len(audio) // hop_length`` if ``center`` is true, and
+            ``1 + (len(audio) - WINDOW_SIZE) // hop_length`` otherwise.
+
+        Raises:
+            ValueError: If ``audio`` is too short to form a single frame, i.e. fewer than
+                ``WINDOW_SIZE`` samples when ``center`` is false.
         """
         return _predict(self.session, audio, viterbi, center, frame_shift)
-
-    def predict_kaldi(
-        self,
-        audio: np.ndarray,
-        *,
-        viterbi: bool = True,
-        center: bool = True,
-        frame_shift: float = 0.01,
-    ) -> np.ndarray:
-        """Like :meth:`predict`, but returns (NCCF, pitch) per frame for use with Kaldi's ``process-pitch``."""
-        return postprocess_pitch(self.predict(audio, viterbi=viterbi, center=center, frame_shift=frame_shift))

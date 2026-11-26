@@ -7,6 +7,8 @@ import numpy as np
 
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
+from typing import Self
+
 import onnxruntime as ort
 import pytest
 import torch
@@ -14,10 +16,9 @@ import torchcrepe
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import array_shapes, arrays
-from typing_extensions import Self
 
 import crepe_predictor
-from crepe_predictor import CrepePredictor, _frame, _predict, _resolve_checkpoint, postprocess_pitch
+from crepe_predictor import CrepePredictor, _frame, _predict, _resolve_checkpoint, to_kaldi_pitch
 from export_torchcrepe_to_onnx import CREPE, convert_from_torchcrepe, export_crepe_to_onnx
 
 
@@ -69,14 +70,32 @@ def test_crepe_matches_torchcrepe(models, audio):
     np.testing.assert_allclose(onnx_out, expected, atol=1e-5)
 
 
-def test_crepe_predictor_predict_shape(tiny_checkpoint):
+def test_crepe_predictor_call_shape(tiny_checkpoint):
     predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
     audio = np.zeros(16000, dtype=np.float32)
-    pitch = predictor.predict(audio)
+    pitch = predictor(audio)
     assert pitch.ndim == 2
     assert pitch.shape[1] == 2
     assert np.all((pitch[:, 0] >= 0) & (pitch[:, 0] <= 1))  # POV is a probability
     assert np.all(pitch[:, 1] >= 0)  # pitch in Hz
+
+
+def test_crepe_predictor_accepts_provider_options_and_session_options(tiny_checkpoint):
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    predictor = CrepePredictor(
+        "tiny",
+        checkpoint=tiny_checkpoint,
+        providers=[("CPUExecutionProvider", {})],
+        session_options=options,
+    )
+    assert predictor.session.get_providers() == ["CPUExecutionProvider"]
+    assert predictor.session.get_session_options().intra_op_num_threads == 1
+
+
+def test_crepe_predictor_defaults_to_cpu(tiny_checkpoint):
+    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
+    assert predictor.session.get_providers() == ["CPUExecutionProvider"]
 
 
 def test_resolve_checkpoint_uses_explicit_path(tiny_checkpoint):
@@ -88,35 +107,35 @@ def test_resolve_checkpoint_missing_explicit_path_raises(tmp_path):
         _resolve_checkpoint("tiny", tmp_path / "missing.onnx")
 
 
-def test_postprocess_interpolates_unvoiced_and_converts_pov_to_nccf():
+def test_to_kaldi_pitch_interpolates_unvoiced_and_converts_pov_to_nccf():
     # runs must be long enough to overcome the voicing HMM's continuity prior (see _predict_voicing)
     pov = np.concatenate([np.zeros(15), np.full(15, 0.95), np.zeros(15)])
     pitch = np.concatenate([np.full(15, 100.0), np.full(15, 150.0), np.full(15, 100.0)])
-    nccf_pitch = postprocess_pitch(np.stack([pov, pitch], axis=1))
+    nccf_pitch = to_kaldi_pitch(np.stack([pov, pitch], axis=1))
     assert nccf_pitch.shape == (45, 2)
     assert np.all(nccf_pitch[:, 1] > 0)
     assert np.all((nccf_pitch[:, 0] >= 0) & (nccf_pitch[:, 0] <= 1))
 
 
-def test_postprocess_raises_when_no_frame_is_voiced():
+def test_to_kaldi_pitch_raises_when_no_frame_is_voiced():
     pitch = np.zeros((10, 2))
     with pytest.raises(ValueError, match="No voiced frames"):
-        postprocess_pitch(pitch)
+        to_kaldi_pitch(pitch)
 
 
-def test_postprocess_raises_when_pitch_not_positive_after_interpolation():
+def test_to_kaldi_pitch_raises_when_pitch_not_positive_after_interpolation():
     pov = np.full(20, 0.95)  # long constant run so the voicing HMM keeps every frame voiced
     pitch = np.full(20, 100.0)
     pitch[5] = -1.0  # invalid pitch value smuggled into an otherwise-voiced frame
     with pytest.raises(ValueError, match="Not all pitch values are positive"):
-        postprocess_pitch(np.stack([pov, pitch], axis=1))
+        to_kaldi_pitch(np.stack([pov, pitch], axis=1))
 
 
 def test_predict_raises_on_audio_shorter_than_one_frame(tiny_checkpoint):
     predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
     audio = np.zeros(100, dtype=np.float32)
     with pytest.raises(ValueError, match="audio is too short"):
-        predictor.predict(audio, center=False)
+        predictor(audio, center=False)
 
 
 class _FakeSession:
@@ -172,15 +191,6 @@ def test_frame_raises_on_audio_shorter_than_one_frame():
     audio = np.zeros(100, dtype=np.float32)
     with pytest.raises(ValueError, match="audio is too short"):
         _frame(audio, 160, center=False)
-
-
-def test_crepe_predictor_predict_kaldi(tiny_checkpoint, monkeypatch):
-    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
-    pov = np.full(20, 0.95)
-    pitch = np.full(20, 150.0)
-    monkeypatch.setattr(predictor, "predict", lambda *args, **kwargs: np.stack([pov, pitch], axis=1))
-    nccf_pitch = predictor.predict_kaldi(np.zeros(16000, dtype=np.float32))
-    assert nccf_pitch.shape == (20, 2)
 
 
 def test_cache_dir_uses_crepe_cache_dir_env(monkeypatch, tmp_path):
