@@ -115,6 +115,36 @@ def test_crepe_predictor_accepts_provider_options_and_session_options(tiny_check
     assert predictor.session.get_session_options().intra_op_num_threads == 1
 
 
+def _allocate_cores(monkeypatch: pytest.MonkeyPatch, platform: str, allocated: int, machine: int) -> None:
+    """Simulate a process allowed on ``allocated`` of the ``machine``'s cores, seen through ``platform``'s API."""
+    for name in ["process_cpu_count", "sched_getaffinity"]:
+        monkeypatch.delattr(os, name, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: machine)
+    if platform == "process_cpu_count":
+        monkeypatch.setattr(os, "process_cpu_count", lambda: allocated, raising=False)
+    elif platform == "sched_getaffinity":
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(allocated)), raising=False)
+
+
+@pytest.mark.parametrize("platform", ["process_cpu_count", "sched_getaffinity", "cpu_count"])
+def test_default_session_options_use_one_thread_per_allocated_core(monkeypatch, platform):
+    _allocate_cores(monkeypatch, platform, allocated=10, machine=64)
+    threads = crepe_predictor._default_session_options().intra_op_num_threads
+    assert threads == (64 if platform == "cpu_count" else 10)  # os.cpu_count() cannot see the allocation
+
+
+def test_crepe_predictor_defaults_to_one_thread_per_allocated_core(tiny_checkpoint, monkeypatch):
+    _allocate_cores(monkeypatch, "sched_getaffinity", allocated=3, machine=64)
+    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
+    assert predictor.session.get_session_options().intra_op_num_threads == 3
+
+
+def test_crepe_predictor_uses_given_session_options_as_is(tiny_checkpoint, monkeypatch):
+    _allocate_cores(monkeypatch, "sched_getaffinity", allocated=3, machine=64)
+    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint, session_options=ort.SessionOptions())
+    assert predictor.session.get_session_options().intra_op_num_threads == 0  # ONNX Runtime's default
+
+
 def test_crepe_predictor_defaults_to_cpu(tiny_checkpoint):
     predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
     assert predictor.session.get_providers() == ["CPUExecutionProvider"]

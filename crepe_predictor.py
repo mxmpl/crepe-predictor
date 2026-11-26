@@ -146,6 +146,20 @@ def _nccf_to_pov(nccf: np.ndarray) -> np.ndarray:
     return 1 / (1 + np.exp(-y))
 
 
+def _default_session_options() -> ort.SessionOptions:
+    """Session options with one intra-op thread per available core."""
+    if hasattr(os, "process_cpu_count"):  # Python 3.13+
+        available_cores = os.process_cpu_count() or 1
+    elif hasattr(os, "sched_getaffinity"):  # Linux
+        available_cores = len(os.sched_getaffinity(0))
+    else:
+        available_cores = os.cpu_count() or 1
+
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = available_cores
+    return options
+
+
 def _cache_dir() -> Path:
     """Cache directory for checkpoints."""
     base = os.environ.get("CREPE_CACHE_DIR") or os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
@@ -241,7 +255,8 @@ class CrepePredictor:
                 ``[("CUDAExecutionProvider", {"device_id": 1}), "CPUExecutionProvider"]``.
                 Defaults to ``["CPUExecutionProvider"]``.
             session_options: ONNX Runtime session options, e.g. to set the number of threads
-                with ``intra_op_num_threads``. Defaults to ONNX Runtime's own defaults.
+                with ``intra_op_num_threads``, used as given. Defaults to ONNX Runtime's defaults,
+                except for one intra-op thread per core this process may run on.
 
         Raises:
             FileNotFoundError: If ``checkpoint`` is given but does not exist.
@@ -251,7 +266,7 @@ class CrepePredictor:
         path = _resolve_checkpoint(capacity, checkpoint)
         self.session = ort.InferenceSession(
             str(path),
-            sess_options=session_options,
+            sess_options=_default_session_options() if session_options is None else session_options,
             providers=list(providers) if providers else ["CPUExecutionProvider"],
         )
 
@@ -278,7 +293,8 @@ class CrepePredictor:
             batch_size: Maximum number of frames passed to the model at once. Peak memory grows
                 with it but not with the length of ``audio``. The result does not depend on it,
                 except for last-bit rounding when ONNX Runtime runs on several threads. Larger
-                values can be faster on GPU.
+                values can be faster on GPU. On CUDA it must stay below 8192 for the ``full``
+                model (65536 for ``tiny``).
 
         Returns:
             An ``(n_frames, 2)`` array of (POV, pitch): the probability of voicing in ``[0, 1]``
