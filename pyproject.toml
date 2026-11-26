@@ -1,6 +1,6 @@
 [project]
 name = "crepe-predictor"
-version = "0.2.0"
+version = "0.3.0"
 description = "A dependency-light reimplementation of CREPE inference with ONNX"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,7 +19,6 @@ classifiers = [
   "Programming Language :: Python :: 3.15",
   "Topic :: Scientific/Engineering",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
-  "Typing :: Typed",
 ]
 dependencies = [
   "numpy>=2.2.6",
