@@ -22,18 +22,19 @@ Inference goes through `crepe_predictor.CrepePredictor`; `crepe_predictor.to_kal
 
 Resolves a checkpoint and opens an ONNX Runtime session for it.
 
-- `capacity`: `"tiny"`, `"small"`, `"medium"`, `"large"`, or `"full"` — model size, trading accuracy for speed.
+- `capacity`: `"tiny"`, `"small"`, `"medium"`, `"large"`, or `"full"` — model size, trading accuracy for speed. Ignored if `checkpoint` is given.
 - `checkpoint`: path to a local `.onnx` file. If omitted, the checkpoint matching `capacity` is downloaded and cached under `$CREPE_CACHE_DIR`, `$XDG_CACHE_HOME`, or `~/.cache/crepe_predictor/checkpoints`.
 - `providers`: ONNX Runtime execution providers, in order of preference, e.g. `["CUDAExecutionProvider", "CPUExecutionProvider"]`. Each entry is a provider name, or a `(name, options)` tuple to configure it, e.g. `("CUDAExecutionProvider", {"device_id": 1})`. Defaults to `["CPUExecutionProvider"]`.
 - `session_options`: an `onnxruntime.SessionOptions`, e.g. to limit threads with `intra_op_num_threads` when running several predictors in parallel. Defaults to ONNX Runtime's own defaults.
 
-### `predictor(audio, *, viterbi=True, center=True, frame_shift=0.01) -> np.ndarray`
+### `predictor(audio, *, viterbi=True, center=True, frame_shift=0.01, batch_size=128) -> np.ndarray`
 
-Calling a `CrepePredictor` estimates pitch from 16 kHz mono `audio`, returning an `(n_frames, 2)` array of `(POV, pitch)`: probability of voicing in `[0, 1]`, and pitch in Hz.
+Calling a `CrepePredictor` estimates pitch from 16 kHz mono `audio` (a 1-D array), returning an `(n_frames, 2)` array of `(POV, pitch)`: probability of voicing in `[0, 1]`, and pitch in Hz.
 
 - `viterbi`: decode pitch bins along a Viterbi path enforcing pitch continuity, instead of a per-frame argmax.
 - `center`: pad `audio` so each frame is centered on its timestamp.
-- `frame_shift`: frame spacing in seconds (the hop).
+- `frame_shift`: frame spacing in seconds (the hop), rounded to a whole number of samples.
+- `batch_size`: maximum number of frames passed to the model at once. Peak memory grows with it, not with the length of `audio`. The result does not depend on it, except for last-bit rounding when ONNX Runtime runs on several threads, which already varied with the length of `audio`. Larger values can be faster on GPU.
 
 ### `to_kaldi_pitch(pitch) -> np.ndarray`
 

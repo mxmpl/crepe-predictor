@@ -18,7 +18,16 @@ from hypothesis import strategies as st
 from hypothesis.extra.numpy import array_shapes, arrays
 
 import crepe_predictor
-from crepe_predictor import CrepePredictor, _frame, _predict, _resolve_checkpoint, to_kaldi_pitch
+from crepe_predictor import (
+    CrepePredictor,
+    _frame_view,
+    _normalize,
+    _predict,
+    _resolve_checkpoint,
+    _viterbi,
+    _viterbi_centers,
+    to_kaldi_pitch,
+)
 from export_torchcrepe_to_onnx import CREPE, convert_from_torchcrepe, export_crepe_to_onnx
 
 
@@ -60,7 +69,7 @@ def models(request, tmp_path_factory):
 def test_crepe_matches_torchcrepe(models, audio):
     """Our torch and ONNX CREPE produce the same activation matrix as torchcrepe."""
     reference, crepe, session = models
-    frames = _frame(audio, 160, center=True)
+    frames = _normalize(_frame_view(audio, 160, center=True))
     with torch.no_grad():
         expected = reference(torch.from_numpy(frames)).numpy()
         torch_out = crepe(torch.from_numpy(frames)).numpy()
@@ -68,6 +77,19 @@ def test_crepe_matches_torchcrepe(models, audio):
 
     np.testing.assert_allclose(torch_out, expected, atol=1e-5)
     np.testing.assert_allclose(onnx_out, expected, atol=1e-5)
+
+
+@pytest.mark.parametrize("frequency", [110.0, 220.0, 440.0, 880.0])
+@pytest.mark.parametrize("viterbi", [True, False])
+def test_predict_recovers_the_pitch_of_a_pure_tone(models, frequency, viterbi):
+    """With the real weights, a sine is voiced and its pitch is found within 10 cents."""
+    _, _, session = models
+    t = np.arange(16000) / 16000
+    pov, pitch = _predict(session, np.sin(2 * np.pi * frequency * t).astype(np.float32), viterbi=viterbi).T
+    inner = slice(5, -5)  # frames near the edges overlap the zero padding
+    assert np.mean(pov[inner] > 0.5) > 0.9
+    cents = 1200 * np.log2(pitch[inner] / frequency)
+    assert np.abs(cents).max() < 10
 
 
 def test_crepe_predictor_call_shape(tiny_checkpoint):
@@ -96,6 +118,75 @@ def test_crepe_predictor_accepts_provider_options_and_session_options(tiny_check
 def test_crepe_predictor_defaults_to_cpu(tiny_checkpoint):
     predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
     assert predictor.session.get_providers() == ["CPUExecutionProvider"]
+
+
+def test_crepe_predictor_result_does_not_depend_on_batch_size(tiny_checkpoint):
+    # a single thread, since ONNX Runtime splits work across threads differently depending
+    # on the batch shape, which can change the last bit of the activations
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint, session_options=options)
+    audio = np.random.default_rng(0).standard_normal(16000).astype(np.float32)
+    expected = predictor(audio, batch_size=10_000)  # 101 frames, all in one batch
+    for batch_size in [1, 7, 100]:
+        np.testing.assert_array_equal(predictor(audio, batch_size=batch_size), expected)
+
+
+def test_crepe_predictor_raises_on_multichannel_audio(tiny_checkpoint):
+    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
+    with pytest.raises(ValueError, match="must be a 1-D mono signal"):
+        predictor(np.zeros((16000, 2), dtype=np.float32))
+
+
+def test_crepe_predictor_raises_on_frame_shift_shorter_than_one_sample(tiny_checkpoint):
+    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
+    with pytest.raises(ValueError, match="frame_shift must be at least one sample"):
+        predictor(np.zeros(16000, dtype=np.float32), frame_shift=1e-5)
+
+
+def test_crepe_predictor_raises_on_non_positive_batch_size(tiny_checkpoint):
+    predictor = CrepePredictor("tiny", checkpoint=tiny_checkpoint)
+    with pytest.raises(ValueError, match="batch_size must be at least 1"):
+        predictor(np.zeros(16000, dtype=np.float32), batch_size=0)
+
+
+def _dense_viterbi(log_start: np.ndarray, log_trans: np.ndarray, log_emit: np.ndarray) -> np.ndarray:
+    """Textbook Viterbi decode over all transitions, as a reference for the banded one."""
+    score = log_start + log_emit[0]
+    backpointers = []
+    for t in range(1, len(log_emit)):
+        candidates = score[:, None] + log_trans
+        backpointers.append(candidates.argmax(axis=0))
+        score = candidates.max(axis=0) + log_emit[t]
+    path = [int(score.argmax())]
+    for pointers in reversed(backpointers):
+        path.append(int(pointers[path[-1]]))
+    return np.array(path[::-1])
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_banded_viterbi_matches_the_dense_one(seed):
+    rng = np.random.default_rng(seed)
+    n_states, max_jump = 50, 3
+    log_trans = np.log(rng.random((n_states, n_states)))
+    log_trans[np.abs(np.subtract.outer(np.arange(n_states), np.arange(n_states))) > max_jump] = -np.inf
+    log_start, log_emit = np.log(rng.random(n_states)), np.log(rng.random((200, n_states)))
+    expected = _dense_viterbi(log_start, log_trans, log_emit)
+    np.testing.assert_array_equal(_viterbi(log_start, log_trans, log_emit, max_jump), expected)
+    np.testing.assert_array_equal(_viterbi(log_start, log_trans, log_emit, n_states - 1), expected)
+
+
+def test_viterbi_centers_matches_a_dense_decode(monkeypatch):
+    """The pitch decode restricted to its transition band finds the same path as a full one."""
+    rng = np.random.default_rng(0)
+    contour = np.clip(180 + np.cumsum(rng.integers(-15, 16, 500)), 0, 359)  # includes jumps beyond the band
+    salience = rng.random((500, 360)) * 0.5
+    salience[np.arange(500), contour] = 1.0
+    banded = _viterbi_centers(salience)
+    monkeypatch.setattr(
+        crepe_predictor, "_viterbi", lambda start, trans, emit, max_jump: _dense_viterbi(start, trans, emit)
+    )
+    np.testing.assert_array_equal(banded, _viterbi_centers(salience))
 
 
 def test_resolve_checkpoint_uses_explicit_path(tiny_checkpoint):
@@ -139,16 +230,21 @@ def test_predict_raises_on_audio_shorter_than_one_frame(tiny_checkpoint):
 
 
 class _FakeSession:
-    """Minimal stand-in for an ONNX session returning a fixed activation matrix."""
+    """Minimal stand-in for an ONNX session returning a fixed activation matrix, batch by batch."""
 
     def __init__(self, salience: np.ndarray) -> None:
         self.salience = salience
+        self.position = 0
 
     def get_inputs(self) -> list[object]:
         return [type("_Input", (), {"name": "frames"})]
 
     def run(self, output_names: object, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
-        return [self.salience]
+        n_frames = len(feeds["frames"])
+        batch = self.salience[self.position : self.position + n_frames]
+        assert len(batch) == n_frames, "more frames than rows in the activation matrix"
+        self.position += n_frames
+        return [batch]
 
 
 def test_predict_frame_count_matches_the_original_crepe():
@@ -182,7 +278,7 @@ def test_predict_never_returns_a_negative_pitch():
 
 def test_frame_without_centering():
     audio = np.zeros(2048, dtype=np.float32)
-    frames = _frame(audio, 160, center=False)
+    frames = _frame_view(audio, 160, center=False)
     assert frames.shape[1] == 1024
     assert len(frames) == (len(audio) - crepe_predictor.WINDOW_SIZE) // 160 + 1
 
@@ -190,7 +286,7 @@ def test_frame_without_centering():
 def test_frame_raises_on_audio_shorter_than_one_frame():
     audio = np.zeros(100, dtype=np.float32)
     with pytest.raises(ValueError, match="audio is too short"):
-        _frame(audio, 160, center=False)
+        _frame_view(audio, 160, center=False)
 
 
 def test_cache_dir_uses_crepe_cache_dir_env(monkeypatch, tmp_path):
